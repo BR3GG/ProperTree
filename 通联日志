@@ -1,0 +1,118 @@
+import csv
+from datetime import datetime
+import os
+
+QSO_LOG_FILE = 'qsolog.csv'
+FIELD_NAMES = ['时间', '呼号', '频率(MHz)', '模式', 'RST报告', '备注']
+
+def init_log():
+    """初始化日志文件"""
+    if not os.path.exists(QSO_LOG_FILE):
+        with open(QSO_LOG_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
+            writer.writeheader()
+
+def log_qso():
+    """记录新的QSO"""
+    print("\n【新建通联记录】")
+    qso = {
+        '时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        '呼号': input("对方呼号: ").upper().strip(),
+        '频率(MHz)': validate_input("频率(MHz): ", float),
+        '模式': validate_input("模式(SSB/CW/FM/Digital): ", 
+                            lambda x: x.upper() if x.upper() in ['SSB', 'CW', 'FM', 'DIGITAL'] else None),
+        'RST报告': input("信号报告(格式599/59): ").strip(),
+        '备注': input("备注(可选): ").strip()
+    }
+    
+    with open(QSO_LOG_FILE, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
+        writer.writerow(qso)
+    print("记录已保存！\n")
+
+def validate_input(prompt, validator):
+    """输入验证"""
+    while True:
+        value = input(prompt).strip()
+        try:
+            validated = validator(value)
+            if validated is not None:
+                return validated
+            print("输入无效，请重新输入")
+        except ValueError:
+            print("格式错误，请重新输入")
+
+def show_log():
+    """显示通联记录"""
+    print("\n【通联记录列表】")
+    with open(QSO_LOG_FILE, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader, 1):
+            print(f"{i}. {row['时间']} | {row['呼号']} | {row['频率(MHz)']}MHz | {row['模式']} | RST:{row['RST报告']}")
+
+def search_qso():
+    """搜索通联记录"""
+    callsign = input("\n请输入要搜索的呼号: ").upper().strip()
+    with open(QSO_LOG_FILE, 'r', newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        found = [row for row in reader if row['呼号'] == callsign]
+    
+    if found:
+        print(f"找到 {len(found)} 条记录:")
+        for i, qso in enumerate(found, 1):
+            print(f"{i}. {qso['时间']} @ {qso['频率(MHz)']}MHz")
+    else:
+        print("未找到相关记录")
+
+def export_adif():
+    """导出为ADIF格式"""
+    filename = f"qsolog_{datetime.now().strftime('%Y%m%d_%H%M')}.adi"
+    with open(QSO_LOG_FILE, 'r', encoding='utf-8') as csvfile, \
+         open(filename, 'w', encoding='utf-8') as adifile:
+        
+        reader = csv.DictReader(csvfile)
+        adifile.write("<ADIF_VER:5>3.1.0\n")
+        adifile.write("<EOH>\n\n")
+        
+        for row in reader:
+            adifile.write(f"<CALL:{len(row['呼号'])}>{row['呼号']}\n")
+            adifile.write(f"<QSO_DATE:{8}>{
+                datetime.strptime(row['时间'], '%Y-%m-%d %H:%M:%S').strftime('%Y%m%d')}\n")
+            adifile.write(f"<TIME_ON:{4}>{
+                datetime.strptime(row['时间'], '%Y-%m-%d %H:%M:%S').strftime('%H%M')}\n")
+            adifile.write(f"<FREQ:{len(row['频率(MHz)'])}>{row['频率(MHz)']}\n")
+            adifile.write(f"<MODE:{len(row['模式'])}>{row['模式']}\n")
+            adifile.write(f"<RST_RCVD:{len(row['RST报告'])}>{row['RST报告']}\n")
+            if row['备注']:
+                adifile.write(f"<COMMENT:{len(row['备注'])}>{row['备注']}\n")
+            adifile.write("<EOR>\n\n")
+    print(f"记录已导出为 {filename}")
+
+def main_menu():
+    """主菜单"""
+    while True:
+        print("\n业余无线电通联记录系统")
+        print("1. 新建通联记录")
+        print("2. 查看所有记录")
+        print("3. 搜索呼号")
+        print("4. 导出ADIF文件")
+        print("5. 退出系统")
+        
+        choice = input("请选择操作 (1-5): ")
+        if choice == '1':
+            log_qso()
+        elif choice == '2':
+            show_log()
+        elif choice == '3':
+            search_qso()
+        elif choice == '4':
+            export_adif()
+        elif choice == '5':
+            print("感谢使用，73！")
+            break
+        else:
+            print("无效选择，请重新输入")
+
+if __name__ == "__main__":
+    init_log()
+    main_menu()
