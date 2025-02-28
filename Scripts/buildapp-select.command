@@ -1,218 +1,334 @@
-#!/usr/bin/env python
-import sys, os, plist, shutil, tempfile, subprocess, argparse
-if 2/3==0: input = raw_input
+#!/usr/bin/env bash
 
-min_tk_version = {
-    "11":"8.6",
-    "12":"8.6"
+# Get the curent directory, the script name
+# and the script name with "py" substituted for the extension.
+args=( "$@" )
+dir="$(cd -- "$(dirname "$0")" >/dev/null 2>&1; pwd -P)"
+script="${0##*/}"
+target="${script%.*}.py"
+
+# use_py3:
+#   TRUE  = Use if found, use py2 otherwise
+#   FALSE = Use py2
+#   FORCE = Use py3
+use_py3="TRUE"
+
+# We'll parse if the first argument passed is
+# --install-python and if so, we'll just install
+# Can optionally take a version number as the
+# second arg - i.e. --install-python 3.13.1
+just_installing="FALSE"
+
+tempdir=""
+
+compare_to_version () {
+    # Compares our OS version to the passed OS version, and
+    # return a 1 if we match the passed compare type, or a 0 if we don't.
+    # $1 = 0 (equal), 1 (greater), 2 (less), 3 (gequal), 4 (lequal)
+    # $2 = OS version to compare ours to
+    if [ -z "$1" ] || [ -z "$2" ]; then
+        # Missing info - bail.
+        return
+    fi
+    local current_os= comp=
+    current_os="$(sw_vers -productVersion)"
+    comp="$(vercomp "$current_os" "$2")"
+    # Check gequal and lequal first
+    if [[ "$1" == "3" && ("$comp" == "1" || "$comp" == "0") ]] || [[ "$1" == "4" && ("$comp" == "2" || "$comp" == "0") ]] || [[ "$comp" == "$1" ]]; then
+        # Matched
+        echo "1"
+    else
+        # No match
+        echo "0"
+    fi
 }
-min_only_suggestion = True
-test_load_tk = True
 
-def _decode(value, encoding="utf-8", errors="ignore"):
-        # Helper method to only decode if bytes type
-        if sys.version_info >= (3,0) and isinstance(value, bytes):
-            return value.decode(encoding,errors)
-        return value
+set_use_py3_if () {
+    # Auto sets the "use_py3" variable based on
+    # conditions passed
+    # $1 = 0 (equal), 1 (greater), 2 (less), 3 (gequal), 4 (lequal)
+    # $2 = OS version to compare
+    # $3 = TRUE/FALSE/FORCE in case of match
+    if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+        # Missing vars - bail with no changes.
+        return
+    fi
+    if [ "$(compare_to_version "$1" "$2")" == "1" ]; then
+        use_py3="$3"
+    fi
+}
 
-def get_os_version():
-    p = subprocess.Popen(["sw_vers","-productVersion"], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    c = p.communicate()
-    return _decode(c[0]).strip()
+get_remote_py_version () {
+    local pyurl= py_html= py_vers= py_num="3"
+    pyurl="https://www.python.org/downloads/macos/"
+    py_html="$(curl -L $pyurl --compressed 2>&1)"
+    if [ -z "$use_py3" ]; then
+        use_py3="TRUE"
+    fi
+    if [ "$use_py3" == "FALSE" ]; then
+        py_num="2"
+    fi
+    py_vers="$(echo "$py_html" | grep -i "Latest Python $py_num Release" | awk '{print $8}' | cut -d'<' -f1)"
+    echo "$py_vers"
+}
 
-def get_min_tk_version():
-    curr_os = get_os_version()
-    curr_min = None
-    for os_ver in sorted(min_tk_version):
-        if os_ver <= curr_os: curr_min = min_tk_version[os_ver]
-    return curr_min
+download_py () {
+    local vers="$1" url=
+    clear
+    echo "  ###                        ###"
+    echo " #     Downloading Python     #"
+    echo "###                        ###"
+    echo
+    if [ -z "$vers" ]; then
+        echo "Gathering latest version..."
+        vers="$(get_remote_py_version)"
+    fi
+    if [ -z "$vers" ]; then
+        # Didn't get it still - bail
+        print_error
+    fi
+    echo "Located Version:  $vers"
+    echo
+    echo "Building download url..."
+    url="$(curl -L https://www.python.org/downloads/release/python-${vers//./}/ --compressed 2>&1 | grep -iE "python-$vers-macos.*.pkg\"" | awk -F'"' '{ print $2 }' | head -n 1)"
+    if [ -z "$url" ]; then
+        # Couldn't get the URL - bail
+        print_error
+    fi
+    echo " - $url"
+    echo
+    echo "Downloading..."
+    echo
+    # Create a temp dir and download to it
+    tempdir="$(mktemp -d 2>/dev/null || mktemp -d -t 'tempdir')"
+    curl "$url" -o "$tempdir/python.pkg"
+    if [ "$?" != "0" ]; then
+        echo
+        echo " - Failed to download python installer!"
+        echo
+        exit $?
+    fi
+    echo
+    echo "Running python install package..."
+    echo
+    sudo installer -pkg "$tempdir/python.pkg" -target /
+    if [ "$?" != "0" ]; then
+        echo
+        echo " - Failed to install python!"
+        echo
+        exit $?
+    fi
+    # Now we expand the package and look for a shell update script
+    pkgutil --expand "$tempdir/python.pkg" "$tempdir/python"
+    if [ -e "$tempdir/python/Python_Shell_Profile_Updater.pkg/Scripts/postinstall" ]; then
+        # Run the script
+        echo
+        echo "Updating PATH..."
+        echo
+        "$tempdir/python/Python_Shell_Profile_Updater.pkg/Scripts/postinstall"
+    fi
+    vers_folder="Python $(echo "$vers" | cut -d'.' -f1 -f2)"
+    if [ -f "/Applications/$vers_folder/Install Certificates.command" ]; then
+        # Certs script exists - let's execute that to make sure our certificates are updated
+        echo
+        echo "Updating Certificates..."
+        echo
+        "/Applications/$vers_folder/Install Certificates.command"
+    fi
+    echo
+    echo "Cleaning up..."
+    cleanup
+    echo
+    if [ "$just_installing" == "TRUE" ]; then
+        echo "Done."
+    else
+        # Now we check for py again
+        echo "Rechecking py..."
+        downloaded="TRUE"
+        clear
+        main
+    fi
+}
 
-def gather_python(show_all=False,path_list=None):
-    # Let's find the available python installs, check their tk version
-    # and try to pick the latest one supported - or throw an error if
-    # we're on macOS 11.x+ and using Tk 8.5 or older.
-    pypaths = (path_list if isinstance(path_list,(list,tuple)) else [path_list]) if path_list else []
-    envpaths = []
-    if not pypaths:
-        for py in ("python","python3"):
-            p = subprocess.Popen(["which",py], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            c = p.communicate()
-            binpath = "/usr/bin/{}".format(py)
-            envpath = "/usr/bin/env {}".format(py)
-            avail = [x for x in _decode(c[0]).split("\n") if len(x) and not x in pypaths and not x == binpath]
-            if os.path.exists(binpath): avail.insert(0,binpath)
-            if len(avail): # Only add paths that we found and verified
-                pypaths.extend(avail)
-                if not envpath in envpaths: envpaths.append((envpath,None,None))
-    py_tk = []
-    for path in pypaths:
-        # Get the version of python first
-        path = path.strip()
-        if not os.path.isfile(path): continue
-        p = subprocess.Popen([path,"-V"], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        c = p.communicate()
-        pv = (_decode(c[0]) + _decode(c[1])).strip().split(" ")[-1]
-        if not len(pv): continue # Bad version?
-        tk_string = "Tkinter" if pv.startswith("2.") else "tkinter"
-        command = "import {} as tk; print(tk.TkVersion)".format(tk_string)
-        p = subprocess.Popen([path,"-c",command], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        c = p.communicate()
-        tk = _decode(c[0]).strip()
-        if test_load_tk:
-            command = "import {} as tk; tk.Tk()".format(tk_string)
-            p = subprocess.Popen([path,"-c",command], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            c = p.communicate()
-            if p.returncode != 0:
-                # Failed to run correctly - skip it
-                continue
-        py_tk.append((path,pv,tk))
-    min_tk = get_min_tk_version()
-    if min_tk and not show_all:
-        return [x for x in py_tk if x[-1] >= min_tk]+envpaths
-    return py_tk+envpaths
+cleanup () {
+    if [ -d "$tempdir" ]; then
+        rm -Rf "$tempdir"
+    fi
+}
 
-def select_py(py_versions,min_tk,pt_current):
-    current = next((x[0] for x in py_versions if x[0] == pt_current),None)
-    while True:
-        os.system("clear")
-        print(" - Currently Available Python Versions -")
-        print("")
-        for i,x in enumerate(py_versions,1):
-            print("{}. {}{}{}{}".format(
-                i,
-                x[0],
-                " {}".format(x[1]) if x[1] else "",
-                " - tk {}".format(x[2]) if x[2] else "",
-                "" if min_tk==None or x[2]==None or x[2] >= min_tk else " ({}+ recommended)".format(min_tk),
-            ))
-        print("")
-        if current: print("C. Current ({})".format(current))
-        print("Q. Quit")
-        print("")
-        menu = input("Please select the python version to use{}:  ".format(" (default is C)" if current else "")).lower()
-        if not len(menu):
-            if current: menu = "c"
-            else: continue
-        if menu == "q": exit()
-        if menu == "c" and current: return next((x for x in py_versions if x[0] == current))
-        try: menu = int(menu)
-        except: continue
-        if not 0 < menu <= len(py_versions): continue
-        return py_versions[menu-1]
+print_error() {
+    clear
+    cleanup
+    echo "  ###                      ###"
+    echo " #     Python Not Found     #"
+    echo "###                      ###"
+    echo
+    echo "Python is not installed or not found in your PATH var."
+    echo
+    if [ "$kernel" == "Darwin" ]; then
+        echo "Please go to https://www.python.org/downloads/macos/ to"
+        echo "download and install the latest version, then try again."
+    else
+        echo "Please install python through your package manager and"
+        echo "try again."
+    fi
+    echo
+    exit 1
+}
 
-def main(use_current=False,path_list=None):
-    # Let's check for an existing app - remove it if it exists,
-    # then create and format a new bundle
-    os.chdir(os.path.dirname(os.path.realpath(__file__)))
-    os.chdir("../")
-    temp = None
-    pt_current = None
-    if os.path.exists("ProperTree.app/Contents/MacOS/ProperTree.command"):
-        # Let's try to read the shebang
-        try:
-            with open("ProperTree.app/Contents/MacOS/ProperTree.command","r") as f:
-                pt = f.read().split("\n")
-                if pt[0].startswith("#!"):
-                    # Got a shebang - save it
-                    pt_current = pt[0][2:]
-        except: pass
-    print("Locating python versions...")
-    if use_current: # Override any passed path_list with our current if needed
-        if not pt_current:
-            print(" - No current ProperTree python version detected!  Aborting!")
-            exit(1)
-        path_list = pt_current
-    py_versions = gather_python(min_only_suggestion,path_list)
-    if not py_versions:
-        print(" - No python installs with functioning tk found!  Aborting!")
-        exit(1)
-    min_tk = get_min_tk_version()
-    py_version = py_versions[0] if len(py_versions) == 1 else select_py(py_versions,min_tk,pt_current)
-    os.system("clear")
-    print("Building .app with the following python install:")
-    print(" - {}".format(py_version[0]))
-    print(" --> {}".format(py_version[1]))
-    print(" --> tk {}".format(py_version[2]))
-    pypath = py_version[0]
-    print("Checking for existing ProperTree.app...")
-    if os.path.exists("ProperTree.app"):
-        print(" - Found, removing...")
-        if os.path.exists("ProperTree.app/Contents/MacOS/Scripts/settings.json"):
-            print(" --> Found settings.json - preserving...")
-            temp = tempfile.mkdtemp()
-            shutil.copy("ProperTree.app/Contents/MacOS/Scripts/settings.json", os.path.join(temp, "settings.json"))
-        shutil.rmtree("ProperTree.app")
-    # Make the directory structure
-    print("Creating bundle structure...")
-    os.makedirs("ProperTree.app/Contents/MacOS/Scripts")
-    os.makedirs("ProperTree.app/Contents/Resources")
-    print("Copying scripts...")
-    print(" - ProperTree.command")
-    with open("ProperTree.command","r") as f:
-        ptcom = f.read().split("\n")
-    if ptcom[0].startswith("#!"):
-        # Got a shebang - remove it
-        ptcom.pop(0)
-    # Set the new shebang
-    ptcom.insert(0,"#!{}".format(pypath))
-    with open("ProperTree.app/Contents/MacOS/ProperTree.command","w") as f:
-        f.write("\n".join(ptcom))
-    # chmod +x
-    p = subprocess.Popen(["chmod","+x","ProperTree.app/Contents/MacOS/ProperTree.command"], shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    c = p.communicate()
-    # Copy everything else
-    for x in os.listdir("Scripts"):
-        if x.startswith(".") or not x.lower().endswith((".py",".plist",".icns")):
+print_target_missing() {
+    clear
+    cleanup
+    echo "  ###                      ###"
+    echo " #     Target Not Found     #"
+    echo "###                      ###"
+    echo
+    echo "Could not locate $target!"
+    echo
+    exit 1
+}
+
+format_version () {
+    local vers="$1"
+    echo "$(echo "$1" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }')"
+}
+
+vercomp () {
+    # Modified from: https://apple.stackexchange.com/a/123408/11374
+    local ver1="$(format_version "$1")" ver2="$(format_version "$2")"
+    if [ $ver1 -gt $ver2 ]; then
+        echo "1"
+    elif [ $ver1 -lt $ver2 ]; then
+        echo "2"
+    else
+        echo "0"
+    fi
+}
+
+get_local_python_version() {
+    # $1 = Python bin name (defaults to python3)
+    # Echoes the path to the highest version of the passed python bin if any
+    local py_name="$1" max_version= python= python_version= python_path=
+    if [ -z "$py_name" ]; then
+        py_name="python3"
+    fi
+    py_list="$(which -a "$py_name" 2>/dev/null)"
+    # Walk that newline separated list
+    while read python; do
+        if [ -z "$python" ]; then
+            # Got a blank line - skip
             continue
-        print(" - "+x)
-        target = "ProperTree.app/Contents/Resources" if x.lower().endswith(".icns") else "ProperTree.app/Contents/MacOS/Scripts"
-        shutil.copy(os.path.join("Scripts",x),target)
-    print("Building Info.plist...")
-    info = {
-        "CFBundleShortVersionString": "0.0", 
-        "CFBundleSignature": "????", 
-        "CFBundleInfoDictionaryVersion": "0.0", 
-        "CFBundleIconFile": "icon", 
-        "NSHumanReadableCopyright": "Copyright 2019 CorpNewt", 
-        "CFBundleIconFile": "shortcut.icns",
-        "CFBundleIdentifier": "com.corpnewt.ProperTree", 
-        "CFBundleDocumentTypes": [
-            {
-                "CFBundleTypeName": "Property List", 
-                "CFBundleTypeRole": "Viewer", 
-                "CFBundleTypeIconFile": "plist", 
-                "CFBundleTypeExtensions": [
-                    "plist"
-                ]
-            }
-        ], 
-        "CFBundleDevelopmentRegion": "English", 
-        "CFBundleExecutable": "ProperTree.command", 
-        "CFBundleName": "ProperTree", 
-        "LSMinimumSystemVersion": "10.4",
-        "LSMultipleInstancesProhibited": True,
-        "CFBundlePackageType": "APPL", 
-        "CFBundleVersion": "0.0"
-    }
-    with open("ProperTree.app/Contents/Info.plist","wb") as f:
-        plist.dump(info,f)
-    if temp:
-        print("Restoring settings.json...")
-        shutil.copy(os.path.join(temp, "settings.json"),"ProperTree.app/Contents/MacOS/Scripts/settings.json")
-        shutil.rmtree(temp,ignore_errors=True)
+        fi
+        if [ "$check_py3_stub" == "1" ] && [ "$python" == "/usr/bin/python3" ]; then
+            # See if we have a valid developer path
+            xcode-select -p > /dev/null 2>&1
+            if [ "$?" != "0" ]; then
+                # /usr/bin/python3 path - but no valid developer dir
+                continue
+            fi
+        fi
+        python_version="$(get_python_version $python)"
+        if [ -z "$python_version" ]; then
+            # Didn't find a py version - skip
+            continue
+        fi
+        # Got the py version - compare to our max
+        if [ -z "$max_version" ] || [ "$(vercomp "$python_version" "$max_version")" == "1" ]; then
+            # Max not set, or less than the current - update it
+            max_version="$python_version"
+            python_path="$python"
+        fi
+    done <<< "$py_list"
+    echo "$python_path"
+}
 
-if __name__ == '__main__':
-    if not str(sys.platform) == "darwin":
-        print("Can only be run on macOS")
-        exit(1)
-    # Setup the cli args
-    parser = argparse.ArgumentParser(prog="buildapp-select.command", description="BuildAppSelect - a py script that builds ProperTree.app")
-    parser.add_argument("-c", "--use-current", help="Use the current shebang in the ProperTree.app (assumes the app is in the parent dir of this script)",action="store_true")
-    parser.add_argument("-p", "--python-path", help="The python path to use in the shebang of the ProperTree.app (-c overrides this)")
-    args = parser.parse_args()
-    try:
-        main(use_current=args.use_current,path_list=args.python_path)
-    except Exception as e:
-        print("An error occurred!")
-        print(str(e))
-        exit(1)
+get_python_version() {
+    local py_path="$1" py_version=
+    # Get the python version by piping stderr into stdout (for py2), then grepping the output for
+    # the word "python", getting the second element, and grepping for an alphanumeric version number
+    py_version="$($py_path -V 2>&1 | grep -i python | cut -d' ' -f2 | grep -E "[A-Za-z\d\.]+")"
+    if [ ! -z "$py_version" ]; then
+        echo "$py_version"
+    fi
+}
+
+prompt_and_download() {
+    if [ "$downloaded" != "FALSE" ] || [ "$kernel" != "Darwin" ]; then
+        # We already tried to download, or we're not on macOS - just bail
+        print_error
+    fi
+    clear
+    echo "  ###                      ###"
+    echo " #     Python Not Found     #"
+    echo "###                      ###"
+    echo
+    target_py="Python 3"
+    printed_py="Python 2 or 3"
+    if [ "$use_py3" == "FORCE" ]; then
+        printed_py="Python 3"
+    elif [ "$use_py3" == "FALSE" ]; then
+        target_py="Python 2"
+        printed_py="Python 2"
+    fi
+    echo "Could not locate $printed_py!"
+    echo
+    echo "This script requires $printed_py to run."
+    echo
+    while true; do
+        read -p "Would you like to install the latest $target_py now? (y/n):  " yn
+        case $yn in
+            [Yy]* ) download_py;break;;
+            [Nn]* ) print_error;;
+        esac
+    done
+}
+
+main() {
+    local python= version=
+    # Verify our target exists
+    if [ ! -f "$dir/$target" ]; then
+        # Doesn't exist
+        print_target_missing
+    fi
+    if [ -z "$use_py3" ]; then
+        use_py3="TRUE"
+    fi
+    if [ "$use_py3" != "FALSE" ]; then
+        # Check for py3 first
+        python="$(get_local_python_version python3)"
+    fi
+    if [ "$use_py3" != "FORCE" ] && [ -z "$python" ]; then
+        # We aren't using py3 explicitly, and we don't already have a path
+        python="$(get_local_python_version python2)"
+        if [ -z "$python" ]; then
+            # Try just looking for "python"
+            python="$(get_local_python_version python)"
+        fi
+    fi
+    if [ -z "$python" ]; then
+        # Didn't ever find it - prompt
+        prompt_and_download
+        return 1
+    fi
+    # Found it - start our script and pass all args
+    "$python" "$dir/$target" "${args[@]}"
+}
+
+# Keep track of whether or not we're on macOS to determine if
+# we can download and install python for the user as needed.
+kernel="$(uname -s)"
+# Check to see if we need to force based on
+# macOS version. 10.15 has a dummy python3 version
+# that can trip up some py3 detection in other scripts.
+# set_use_py3_if "3" "10.15" "FORCE"
+downloaded="FALSE"
+# Check for the aforementioned /usr/bin/python3 stub if
+# our OS version is 10.15 or greater.
+check_py3_stub="$(compare_to_version "3" "10.15")"
+trap cleanup EXIT
+if [ "$1" == "--install-python" ] && [ "$kernel" == "Darwin" ]; then
+    just_installing="TRUE"
+    download_py "$2"
+else
+    main
+fi

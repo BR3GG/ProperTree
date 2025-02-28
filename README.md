@@ -31,9 +31,9 @@ On any system you can choose the green `Code` button, followed by the `Download 
 
 ```
 git clone https://github.com/corpnewt/ProperTree
-python ./ProperTree/ProperTree.command
+python ./ProperTree/ProperTree.py
 - or -
-python3 ./ProperTree/ProperTree.command
+python3 ./ProperTree/ProperTree.py
 ```
 
 \* On macOS, you can simply double-click the `ProperTree.command` after cloning to launch.
@@ -49,13 +49,29 @@ git clone https://github.com/corpnewt/ProperTree
 
 ## FAQ
 
-* **ProperTree opens a black window on macOS Monterey (12.x)**
+* **What does OC Snapshot do?**
 
-  It appears the default tk implementation that ships with macOS Monterey doesn't display correctly.  A workaround is to download and install the intel build (not "universal") of python 3.9.9 from python.org (direct link [here](https://www.python.org/ftp/python/3.9.9/python-3.9.9-macosx10.9.pkg)) which has a compatible tk bundled, then use the `buildapp-select.command` located in ProperTree's `Scripts` directory to build an application bundle targeting the installed python's path.
+  The OC Snapshot function will prompt you to select an OC folder, then walk the contents of the ACPI, Kexts, Tools, and Drivers directories within that folder - comparing all entries to the current document's `ACPI -> Add`, `Kernel -> Add`, `Misc -> Tools`, and `UEFI -> Drivers` respectively.  It will add or remove entries as needed, and also ensures kext load order by comparing each kext's `CFBundleIdentifier` to all other kexts' `OSBundleLibraries` within their Info.plist - making sure that any kext that is relied on by others is loaded before them.  It will also warn if it detects duplicate `CFBundleIdentifiers` (with support for `MinKernel`, `MaxKernel`, and `MatchKernel` overlap checks), and offer to disable all after the first found.  It checks for disabled parent kexts with enabled child kexts as well.  The schema used is (by default) determined by comparing the MD5 hash of the `OpenCore.efi` file to a known list of Acidanthera debug/release versions.  If the MD5 hash does not match any known version, it will fall back to the newest schema in the script's `snapshot.plist`.  This behavior can be customized in the Settings per the `OC Snapshot Target Version` menu.
+
+* **What is the difference between OC Snapshot and OC Clean Snapshot?**
+
+  Both snapshot variants accomplish the same tasks - they just leverage different starting points.  An OC **Clean** Snapshot will first clear out `ACPI -> Add`, `Kernel -> Add`, `Misc -> Tools`, and `UEFI -> Drivers`, then add everything from within the respective ACPI, Kexts, Tools, and Drivers directory anew.  A regular OC Snapshot starts with the information within the current document for those four locations, and only pulls changes - adding and removing entries as needed.
+  
+* **When should I use an OC Clean Snapshot vs an OC Snapshot?**
+
+  Typically, an OC **Clean** Snapshot should only be used the first time you snapshot to ensure any sample entries in the config.plist are removed and added anew.  Every subsequent snapshot should be a regular OC Snapshot to ensure any customizations you've made are preserved.
+
+* **Can't click anything on Sonoma (14.x) and Newer**
+
+  This appears to manifest when using python 3.11.x and older due to some isssue with tk and macOS.  Updating to at least python 3.12.0 (found [here](https://www.python.org/downloads/macos/)) appears to fix it.  If you are unable to update your python version, you can also move the window around before trying to click the elements in the treeview.
+
+* **ProperTree opens a black window on macOS Monterey (12.x) and Newer**
+
+  It appears the default tk implementation that ships with macOS Monterey (and the version installed with the Command Line Tools) doesn't display correctly.  A workaround is to download and install the latest build of python from python.org (found [here](https://www.python.org/downloads/macos/)) which has a compatible tk bundled, then use the `buildapp-select.command` located in ProperTree's `Scripts` directory to build an application bundle targeting the installed python's path.  You can then leverage the `ProperTree.app` bundle it creates.
   
 * **ProperTree cannot open or save plist files on macOS Monterey (12.x)**
 
-  This appears to be an issue with the "universal" installers from python.org.  The solution is to use the intel-only build.  The latest of which is 3.9.9, direct linked [here](https://www.python.org/ftp/python/3.9.9/python-3.9.9-macosx10.9.pkg).  After installing, use the `buildapp-select.command` located in ProperTree's `Scripts` directory to build an application bundle targeting the installed python's path.
+  This appears to be an issue with the built-in tk, and the earlier "universal" installers from python.org.  With at least python 3.10.2, this issue has been resolved in the universal builds.  You can get the latest python 3 installer [here](https://www.python.org/downloads/macos/).  After installing, use the `buildapp-select.command` located in ProperTree's `Scripts` directory to build an application bundle targeting the installed python's path.  You can then leverage the `ProperTree.app` bundle it creates.
 
 * **How can I have ProperTree open when I double-click a .plist file?**
 
