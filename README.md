@@ -115,7 +115,45 @@ git clone https://github.com/corpnewt/ProperTree
 5. /usr/bin/env python3
 
 C. Current (/Library/Frameworks/Python.framework/Versions/3.9/bin/python3)
-Q. Quit
+// Flutter示例
+class QSORecordPage extends StatefulWidget {
+  @override
+  _QSORecordPageState createState() => _QSORecordPageState();
+}
+
+class _QSORecordPageState extends State<QSORecordPage> {
+  final _formKey = GlobalKey<FormState>();
+  TextEditingController _callsignController = TextEditingController();
+
+  void _submitForm() async {
+    final qso = QSO(
+      callsign: _callsignController.text,
+      // 其他字段...
+    );
+    await DBHelper.insertQSO(qso);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("新建通联")),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: EdgeInsets.all(16),
+          children: <Widget>[
+            TextFormField(
+              controller: _callsignController,
+              validator: (value) => value!.isEmpty ? '必须填写呼号' : null,
+              decoration: InputDecoration(labelText: '呼号'),
+            ),
+            // 其他表单字段...
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 Please select the python version to use:  
 ```
